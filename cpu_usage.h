@@ -1,14 +1,26 @@
 #ifndef CPU_USAGE
 #define CPU_USAGE
 
+#if defined(INCLUDE_CPU_USAGE_IMPLEMENTATION) || defined(MAIN_TEST)
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#endif
+
 /* cpu_usage.h - v1.0 - public domain cpu usage reader - Hugo Coto Florez 2026
 
-   To use this library, do this in *one* C file:
+   To use this library, do this in *one* C or C++ file:
       #define INCLUDE_CPU_USAGE_IMPLEMENTATION
       #include "cpu_usage.h"
 
    In other source files, just include the header normally:
       #include "cpu_usage.h"
+
+   The library is written in portable C (C99) and also compiles as C++.
+   All exported functions have C linkage (extern "C"), so a single
+   implementation can be called from both C and C++ translation units;
+   just define INCLUDE_CPU_USAGE_IMPLEMENTATION in exactly one .c or .cpp
+   file and link the rest against it.
 
 TABLE OF CONTENTS
 
@@ -186,6 +198,10 @@ typedef struct Cpu_Proc_Slice {
         unsigned int valid : 1; // sanity check
 } Cpu_Proc_Slice;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int get_cpu_usage(Cpu_Id id, Cpu_Perf_Slice *slice);                                                                            // Get the cpu usage since a fixed moment in the past
 double calc_cpu_usage(Cpu_Perf_Slice t0, Cpu_Perf_Slice t1);                                                                    // Get the difference between two usage-slices
 int get_proc_cpu_usage(long pid, Cpu_Proc_Slice *slice);                                                                        // Snapshot the counters of a process (pid <= 0 -> self)
@@ -209,7 +225,8 @@ int
 get_cpu_usage(Cpu_Id id, Cpu_Perf_Slice *slice)
 {
         FILE *fp;
-        char *fmt = NULL;
+        char buf[1024] = { 0 };
+        char fmt[96];
 
         if (slice == NULL) goto err;
         memset(slice, 0, sizeof(Cpu_Perf_Slice));
@@ -224,7 +241,6 @@ get_cpu_usage(Cpu_Id id, Cpu_Perf_Slice *slice)
                 return -1;
         }
 
-        char buf[1024] = { 0 };
         for (int i = 0; i <= id; i++) {
                 if (fgets(buf, sizeof buf - 1, fp) == NULL) {
                         if (ferror(fp)) {
@@ -240,20 +256,9 @@ get_cpu_usage(Cpu_Id id, Cpu_Perf_Slice *slice)
         }
 
         if (id == CPU_ALL) {
-                if (asprintf(&fmt, "cpu %%llu %%llu %%llu %%llu %%llu %%llu %%llu %%llu") < 0) {
-                        perror("Failed to build parsing format");
-                        goto err;
-                }
+                snprintf(fmt, sizeof fmt, "cpu %%llu %%llu %%llu %%llu %%llu %%llu %%llu %%llu");
         } else {
-                if (asprintf(&fmt, "cpu%d %%llu %%llu %%llu %%llu %%llu %%llu %%llu %%llu", id) < 0) {
-                        perror("Failed to build parsing format");
-                        goto err;
-                }
-        }
-
-        if (fmt == NULL) {
-                perror("Parsing format not stored");
-                goto err;
+                snprintf(fmt, sizeof fmt, "cpu%d %%llu %%llu %%llu %%llu %%llu %%llu %%llu %%llu", id);
         }
 
         if (fscanf(fp, fmt, &slice->use, &slice->nic, &slice->sys, &slice->idl,
@@ -268,10 +273,8 @@ get_cpu_usage(Cpu_Id id, Cpu_Perf_Slice *slice)
         slice->valid    = 1u;
         slice->id       = id;
 
-        if (fmt) free(fmt);
         return 0;
 err:
-        if (fmt) free(fmt);
         return -1;
 }
 
@@ -439,12 +442,17 @@ calc_cpu_usage(Cpu_Perf_Slice t0, Cpu_Perf_Slice t1)
 
 #endif
 
+#ifdef __cplusplus
+}
+#endif
+
 #if defined(MAIN_TEST)
 
 // EXAMPLE
 
 #include <assert.h>
 #include <signal.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 static pid_t busy_pid;
@@ -475,7 +483,7 @@ main()
         assert(busy_pid >= 0);
         if (busy_pid == 0) {
                 // child: burn one core forever
-                for (volatile unsigned long long i = 1; i != 0; i++)
+                for (volatile unsigned long long i = 1; i != 0; i = i + 1)
                         ;
         }
 
