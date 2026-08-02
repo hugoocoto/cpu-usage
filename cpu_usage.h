@@ -85,6 +85,16 @@ DOCUMENTATION
       Same as calc_proc_cpu_usage, but also counts the CPU time of the
       process's children (cutime + cstime, fields 16-17).
 
+    calc_proc_cpu_usage_per_core
+      Same as calc_proc_cpu_usage, but scaled to per-core percentages
+      (top/htop style): one full core reads 100%, the ceiling is
+      100 * ncpus %. The factor comes from get_cpu_count() and requires
+      id == CPU_ALL; returns -1.0 otherwise.
+
+    calc_proc_cpu_usage_children_per_core
+      Same as calc_proc_cpu_usage_children, scaled to per-core
+      percentages as described above.
+
   Usage:
 
     Cpu_Perf_Slice sys0, sys1;
@@ -124,6 +134,10 @@ NOTES
     it can be smaller than the core range present in /proc/stat.
   * Quota-limited containers (--cpus): usage is still reported against the
     host; quota-relative usage would require reading /sys/fs/cgroup/cpu.max.
+  * The *_per_core functions scale the machine-wide percentage by
+    get_cpu_count(), so one full core reads 100% and the ceiling is
+    100 * ncpus %. They require id == CPU_ALL and inherit get_cpu_count()'s
+    cpuset caveat.
   * This library is stateless and keeps no globals between calls.
 
 CREDITS
@@ -179,6 +193,8 @@ int get_thread_cpu_usage(long pid, long tid, Cpu_Proc_Slice *slice);            
 int get_cpu_count(void);                                                                                                        // Number of cores the process may run on (-1 on error)
 double calc_proc_cpu_usage(Cpu_Id id, Cpu_Proc_Slice p0, Cpu_Proc_Slice p1, Cpu_Perf_Slice sys0, Cpu_Perf_Slice sys1);          // Process usage % against the given Cpu_Id total
 double calc_proc_cpu_usage_children(Cpu_Id id, Cpu_Proc_Slice p0, Cpu_Proc_Slice p1, Cpu_Perf_Slice sys0, Cpu_Perf_Slice sys1); // Same, including children (cutime + cstime)
+double calc_proc_cpu_usage_per_core(Cpu_Id id, Cpu_Proc_Slice p0, Cpu_Proc_Slice p1, Cpu_Perf_Slice sys0, Cpu_Perf_Slice sys1); // Top-style %, one core = 100%, up to 100*ncpus
+double calc_proc_cpu_usage_children_per_core(Cpu_Id id, Cpu_Proc_Slice p0, Cpu_Proc_Slice p1, Cpu_Perf_Slice sys0, Cpu_Perf_Slice sys1); // Same, including children (per core)
 
 #endif // !CPU_USAGE
 #if defined(INCLUDE_CPU_USAGE_IMPLEMENTATION)
@@ -376,6 +392,37 @@ calc_proc_cpu_usage_children(Cpu_Id id, Cpu_Proc_Slice p0, Cpu_Proc_Slice p1,
                               p0.total_children, p1.total_children);
 }
 
+static double
+calc_proc_impl_per_core(Cpu_Id id, Cpu_Proc_Slice p0, Cpu_Proc_Slice p1,
+                        Cpu_Perf_Slice sys0, Cpu_Perf_Slice sys1,
+                        unsigned long long t0, unsigned long long t1)
+{
+        double pct;
+        int n;
+
+        if (id != CPU_ALL) return -1.0; // per-core basis needs the machine total
+        pct = calc_proc_impl(id, p0, p1, sys0, sys1, t0, t1);
+        if (pct < 0.0) return pct;
+        n = get_cpu_count();
+        if (n <= 0) return -1.0;
+        return pct * n;
+}
+
+double
+calc_proc_cpu_usage_per_core(Cpu_Id id, Cpu_Proc_Slice p0, Cpu_Proc_Slice p1,
+                             Cpu_Perf_Slice sys0, Cpu_Perf_Slice sys1)
+{
+        return calc_proc_impl_per_core(id, p0, p1, sys0, sys1, p0.total, p1.total);
+}
+
+double
+calc_proc_cpu_usage_children_per_core(Cpu_Id id, Cpu_Proc_Slice p0, Cpu_Proc_Slice p1,
+                                      Cpu_Perf_Slice sys0, Cpu_Perf_Slice sys1)
+{
+        return calc_proc_impl_per_core(id, p0, p1, sys0, sys1,
+                                       p0.total_children, p1.total_children);
+}
+
 double
 calc_cpu_usage(Cpu_Perf_Slice t0, Cpu_Perf_Slice t1)
 {
@@ -422,7 +469,7 @@ main()
         Cpu_Proc_Slice t_prev;
         Cpu_Proc_Slice t_curr;
         Cpu_Id id = CPU_ALL;
-        double usage, self_usage, self_child, child_usage, thread_usage;
+        double usage, self_usage, child_usage, thread_usage, child_per_core;
 
         busy_pid = fork();
         assert(busy_pid >= 0);
@@ -447,13 +494,13 @@ main()
                 assert(get_proc_cpu_usage(0, &s_curr) >= 0);
                 assert(get_proc_cpu_usage(busy_pid, &c_curr) >= 0);
                 assert(get_thread_cpu_usage(busy_pid, busy_pid, &t_curr) >= 0);
-                usage        = calc_cpu_usage(prev, curr);
-                self_usage   = calc_proc_cpu_usage(id, s_prev, s_curr, prev, curr);
-                self_child   = calc_proc_cpu_usage_children(id, s_prev, s_curr, prev, curr);
-                child_usage  = calc_proc_cpu_usage(id, c_prev, c_curr, prev, curr);
-                thread_usage = calc_proc_cpu_usage(id, t_prev, t_curr, prev, curr);
-                printf("Total: %.2f%% | self: %.2f%% | self+children: %.2f%% | child: %.2f%% | child thread: %.2f%%\n",
-                       usage, self_usage, self_child, child_usage, thread_usage);
+                usage         = calc_cpu_usage(prev, curr);
+                self_usage    = calc_proc_cpu_usage(id, s_prev, s_curr, prev, curr);
+                child_usage   = calc_proc_cpu_usage(id, c_prev, c_curr, prev, curr);
+                thread_usage  = calc_proc_cpu_usage(id, t_prev, t_curr, prev, curr);
+                child_per_core = calc_proc_cpu_usage_per_core(id, c_prev, c_curr, prev, curr);
+                printf("Total: %.2f%% | self: %.2f%% | child: %.2f%% | child thread: %.2f%% | child per core: %.2f%%\n",
+                       usage, self_usage, child_usage, thread_usage, child_per_core);
                 prev   = curr;
                 s_prev = s_curr;
                 c_prev = c_curr;
